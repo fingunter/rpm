@@ -16,9 +16,11 @@
 #include <rpm/rpmfileutil.h>	/* rpmMkTemp() */
 #include <rpm/rpmlog.h>
 #include <rpm/rpmstring.h>
+#include <rpmio/rpmio_internal.h>
 
 #include "lib/rpmlead.h"
 #include "lib/signature.h"
+#include "lib/rpmsignfiles.h"
 
 #include "debug.h"
 
@@ -487,14 +489,150 @@ static void unloadImmutableRegion(Header *hdrp, rpmTagVal tag, rpmtd utd)
     }
 }
 
+static rpmRC includeFileSignatures(FD_t fd, const char *rpm,
+				   Header *sigp, Header *hdrp,
+				   off_t sigStart, off_t headerStart)
+{
+    FD_t ofd = NULL;
+    struct rpmtd_s td;
+    char *trpm = NULL;
+    const char *key;
+    char *SHA1 = NULL;
+    uint8_t *MD5 = NULL;
+    unsigned char buf[32*BUFSIZ];
+    size_t sha1len;
+    size_t md5len;
+    off_t headerSize;
+    off_t archiveSize;
+    rpmRC rc = RPMRC_OK;
+
+    unloadImmutableRegion(hdrp, RPMTAG_HEADERIMMUTABLE, &td);
+
+    key = rpmExpand("%{?_file_signing_key}", NULL);
+
+    rc = rpmSignFiles(*hdrp, key);
+    if (rc != RPMRC_OK) {
+	goto exit;
+    }
+
+    *hdrp = headerReload(*hdrp, RPMTAG_HEADERIMMUTABLE);
+    if (*hdrp == NULL) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("headerReload failed\n"));
+	goto exit;
+    }
+
+    ofd = rpmMkTempFile(NULL, &trpm);
+    if (ofd == NULL || Ferror(ofd)) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("rpmMkTemp failed\n"));
+	goto exit;
+    }
+
+    /* Copy archive to temp file */
+    if (copyFile(&fd, rpm, &ofd, trpm)) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("copyFile failed\n"));
+	goto exit;
+    }
+
+    if (Fseek(fd, headerStart, SEEK_SET) < 0) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("Could not seek in file %s: %s\n"),
+		rpm, Fstrerror(fd));
+	goto exit;
+    }
+
+    /* Write header to rpm and recalculate SHA1 */
+    fdInitDigest(fd, PGPHASHALGO_SHA1, 0);
+    rc = headerWrite(fd, *hdrp, HEADER_MAGIC_YES);
+    if (rc != RPMRC_OK) {
+	rpmlog(RPMLOG_ERR, _("headerWrite failed\n"));
+	goto exit;
+    }
+    fdFiniDigest(fd, PGPHASHALGO_SHA1, (void **)&SHA1, &sha1len, 1);
+    headerSize = Ftell(fd) - headerStart;
+
+    /* Copy archive from temp file */
+    if (Fseek(ofd, 0, SEEK_SET) < 0) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("Could not seek in file %s: %s\n"),
+		rpm, Fstrerror(fd));
+	goto exit;
+    }
+    if (copyFile(&ofd, trpm, &fd, rpm)) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("copyFile failed\n"));
+	goto exit;
+    }
+    unlink(trpm);
+
+    /* Recalculate MD5 digest of header+archive */
+    if (Fseek(fd, headerStart, SEEK_SET) < 0) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("Could not seek in file %s: %s\n"),
+		rpm, Fstrerror(fd));
+	goto exit:
+    }
+    fdInitDigest(fd, PGPHASHALGO_MD5, 0);
+
+    while (Fread(buf, sizeof(buf[0]), sizeof(buf), fd) > 0);
+	;
+    if (Ferror(fd)) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("Fread failed in file %s: %s\n"),
+		rpm, Fstrerror(fd));
+	goto exit;
+    }
+    fdFiniDigest(fd, PGPHASHALGO_MD5, (void **)&MD5, &md5len, 0);
+
+    if (Fseek(fd, sigStart, SEEK_SET) < 0) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("Could not seek in file %s: %s\n"),
+		rpm, Fstrerror(fd));
+	goto exit;
+    }
+
+    /* Get payload size from signature tag */
+    archiveSize = headerGetNumber(*sigp, RPMSIGTAG_PAYLOADSIZE);
+    if (!archiveSize) {
+	archiveSize = headerGetNumber(*sigp, RPMSIGTAG_LONGARCHIVESIZE);
+    }
+
+    /* Replace old digests in sigh */
+    rc = rpmGenerateSignature(SHA1, MD5, headerSize, archiveSize, fd);
+    if (rc != RPMRC_OK) {
+	rpmlog(RPMLOG_ERR, _("generateSignature failed\n"));
+	goto exit;
+    }
+
+    if (Fseek(fd, sigStart, SEEK_SET) < 0) {
+	rc = RPMRC_FAIL;
+	rpmlog(RPMLOG_ERR, _("Could not seek in file %s: %s\n"),
+		rpm, Fstrerror(fd));
+	goto exit:
+    }
+
+    rc = rpmReadSignature(fd, sigp, RPMSIGTYPE_HEADERSIG, NULL);
+    if (rc != RPMRC_OK) {
+	rpmlog(RPMLOG_ERR, _("rpmReadSignature failed\n"));
+	goto exit;
+    }
+exit:
+if (ofd)    (void) closeFile(&ofd);
+    return rc;
+}
+
 /** \ingroup rpmcli
  * Create/modify elements in signature header.
  * @param rpm		path to package
  * @param deleting	adding or deleting signature?
+ * @param signfiles	sign files if non-zero
  * @param passPhrase	passPhrase (ignored when deleting)
  * @return		0 on success, -1 on error
  */
-static int rpmSign(const char *rpm, int deleting, const char *passPhrase)
+static int rpmSign(const char *rpm, int deleting, int signfiles,
+		   const char *passPhrase)
 {
     FD_t fd = NULL;
     FD_t ofd = NULL;
@@ -543,6 +681,10 @@ static int rpmSign(const char *rpm, int deleting, const char *passPhrase)
     if (!headerIsEntry(h, RPMTAG_HEADERIMMUTABLE)) {
 	rpmlog(RPMLOG_ERR, _("Cannot sign RPM v3 packages\n"));
 	goto exit;
+    }
+
+    if (signfiles) {
+	includeFileSignatures(fd, rpm, &sigh, &h, sigStart, headerStart);
     }
 
     unloadImmutableRegion(&sigh, RPMTAG_HEADERSIGNATURES, &utd);
@@ -695,7 +837,7 @@ int rpmPkgSign(const char *path,
 	}
     }
 
-    rc = rpmSign(path, 0, passPhrase);
+    rc = rpmSign(path, 0, args->signfiles, passPhrase);
 
     if (args) {
 	if (args->hashalgo) {
@@ -711,5 +853,5 @@ int rpmPkgSign(const char *path,
 
 int rpmPkgDelSign(const char *path)
 {
-    return rpmSign(path, 1, NULL);
+    return rpmSign(path, 1, 0, NULL);
 }

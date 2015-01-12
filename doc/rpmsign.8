@@ -2,10 +2,16 @@
 .SH NAME
 rpmsign \- RPM Package Signing
 .SH SYNOPSIS
+.SS "SIGNING PACKAGES:"
+.PP
 
-\fBrpm\fR \fB--addsign|--resign\fR \fB\fIPACKAGE_FILE\fB\fR\fI ...\fR
+\fBrpm\fR \fB--addsign|--resign\fR [\fBrpmsign-options\fR] \fB\fIPACKAGE_FILE\fB\fR\fI ...\fR
 
 \fBrpm\fR \fB--delsign\fR \fB\fIPACKAGE_FILE\fB\fR\fI ...\fR
+
+.SS "rpmsign-options"
+.PP
+ \fB--fskpath \fIKEY\fB\fR] [\fB--signfiles\fR]
 
 .SH DESCRIPTION
 .PP
@@ -19,6 +25,19 @@ there is no difference in behavior currently.
 
 .PP
 Delete all signatures from each package \fIPACKAGE_FILE\fR given.
+
+.SS "SIGN OPTIONS"
+.PP
+.TP
+\fB--fskpath \fIKEY\fB\fR
+Used with \fB--signfiles\fR, use file signing key \fIKEY\fR.
+.TP
+\fB--signfiles\fR
+Sign package files. The macro \fB%_binary_filedigest_algorithm\fR must be set
+before building the package, and the macro must be set to a supported algorithm:
+2, 8, 9, or 10, which represent SHA1, SHA256, SHA384, and SHA512, respectively.
+The file signing key (RSA private key) can be configured on the command line
+with \fB--fskpath\fR or the macro \fB%_file_signing_key\fR.
 
 .SS "USING GPG TO SIGN PACKAGES"
 .PP
@@ -78,4 +97,5 @@ Marc Ewing <marc@redhat.com>
 Jeff Johnson <jbj@redhat.com>
 Erik Troan <ewt@redhat.com>
 Panu Matilainen <pmatilai@redhat.com>
+Fionnuala Gunter <fin@linux.vnet.ibm.com>
 .fi

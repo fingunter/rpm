@@ -88,6 +88,10 @@ static int manageFile(FD_t *fdp, const char *fn, int flags)
 
 /**
  * Copy header+payload, calculating digest(s) on the fly.
+ * @param sfdp source file
+ * @param sfnp source path
+ * @param tfdp destination file
+ * @param tfnp destination path
  */
 static int copyFile(FD_t *sfdp, const char *sfnp,
 		FD_t *tfdp, const char *tfnp)
@@ -121,8 +125,6 @@ static int copyFile(FD_t *sfdp, const char *sfnp,
     rc = 0;
 
 exit:
-    if (*sfdp)	(void) closeFile(sfdp);
-    if (*tfdp)	(void) closeFile(tfdp);
     return rc;
 }
 

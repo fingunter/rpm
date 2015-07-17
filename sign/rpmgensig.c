@@ -499,7 +499,7 @@ static void unloadImmutableRegion(Header *hdrp, rpmTagVal tag, rpmtd utd)
 	headerFreeIterator(hi);
 	headerFree(oh);
 	rpmtdFreeData(utd);
-
+	headerFree(*hdrp);
 	*hdrp = headerLink(nh);
 	headerFree(nh);
     }

@@ -680,6 +680,8 @@ static int rpmSign(const char *rpm, int deleting, int signfiles)
     struct sigTarget_s sigt1;
     struct sigTarget_s sigt2;
     unsigned int origSigSize;
+    unsigned int postFileSignSize;
+    unsigned int sigSize;
     int insSig = 0;
 
     fprintf(stdout, "%s:\n", rpm);
@@ -714,12 +716,14 @@ static int rpmSign(const char *rpm, int deleting, int signfiles)
 	goto exit;
     }
 
+    origSigSize = headerSizeof(sigh, HEADER_MAGIC_YES);
+
     if (signfiles) {
 	includeFileSignatures(fd, rpm, &sigh, &h, sigStart, headerStart);
     }
 
     unloadImmutableRegion(&sigh, RPMTAG_HEADERSIGNATURES);
-    origSigSize = headerSizeof(sigh, HEADER_MAGIC_YES);
+    postFileSignSize = headerSizeof(sigh, HEADER_MAGIC_YES);
 
     if (deleting) {	/* Nuke all the signature tags. */
 	deleteSigs(sigh);
@@ -756,9 +760,10 @@ static int rpmSign(const char *rpm, int deleting, int signfiles)
 	char *reservedSpace = NULL;
 
 	count = utd.count;
-	diff = headerSizeof(sigh, HEADER_MAGIC_YES) - origSigSize;
+	sigSize = headerSizeof(sigh, HEADER_MAGIC_YES);
+	diff = sigSize - postFileSignSize;
 
-	if (diff < count) {
+	if ((diff < count) && (sigSize > origSigSize)) {
 	    reservedSpace = xcalloc(count - diff, sizeof(char));
 	    headerDel(sigh, RPMSIGTAG_RESERVEDSPACE);
 	    rpmtdReset(&utd);
